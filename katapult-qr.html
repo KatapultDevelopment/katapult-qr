@@ -1,0 +1,513 @@
+<!--
+@license
+Copyright (c) 2016 Katapult Engineering. All rights reserved.
+-->
+
+<!--
+An element used to utilize a smart phone camera to scan and read a QR code
+-->
+
+<link rel="import" href="../polymer/polymer.html">
+
+<dom-module id="katapult-qr">
+
+    <style>
+        :host {
+            font-family: Helvetica;
+        }
+
+        #mainContainer {
+            position: relative;
+            z-index: 10;
+            overflow:hidden;
+            width:100%;
+            height:100%;
+        }
+
+        video {
+            float:left;
+            height:100%;
+            background-color: rgb(33, 34, 37);
+        }
+
+        #overlay {
+            border: 10px solid rgba(198, 198, 198, 0.4);
+            border-radius: 20px;
+            border-style: dashed;
+            position: relative;
+            z-index:5;
+            margin: auto;
+            width:80%;
+            height:80%;
+            opacity: 1.0;
+            transition: opacity, 0.5s;
+        }
+
+        #canvas {
+            background-color: rgb(33, 34, 37);
+            border: 2px solid black;
+            position: absolute;
+            left:0;
+            top:0;
+            width:100%;
+            height:100%;
+        }
+
+        #fileUpload {
+            position: relative;
+            top:-45px;
+            overflow: hidden;
+            margin: 10px;
+            width:130px;
+            background-color:#337AB7;
+            color:white;
+            padding:5px;
+            text-align: center;
+            border-radius: 5px;
+            margin:auto;
+            cursor: pointer;
+
+            opacity: 1.0;
+            transition: opacity, 1.0s;
+        }
+        #fileUpload input.upload {
+            position: absolute;
+            z-index: 12;
+            top: 0;
+            right: 0;
+            margin: 0;
+            padding: 0;
+            width:100%;
+            height:100%;
+            opacity: 0;
+            cursor: pointer;
+            /*filter: alpha(opacity=0);*/
+        }
+
+        .hidden {
+            opacity: 0 !important;
+        }
+
+        .svg {
+            position: absolute;
+            z-index: 15;
+            width:50%;
+            opacity: 0;
+            transition: opacity, 0.3s;
+        }
+
+        .svg g {
+            color:white;
+        }
+
+        .show {
+            opacity: 1.0 !important;
+        }
+
+        #message {
+            position: absolute;
+            width: 75%;
+            margin: auto;
+            text-align: center;
+            z-index: 10;
+            color: rgb(124, 124, 124);
+
+            opacity: 1.0;
+            transition: opacity, 0.3s;
+        }
+
+    </style>
+
+    <template>
+
+        <div id="mainContainer">
+            <div id="message" class="hidden">Your device does not support direct camera access. Please choose a photo.</div>
+
+            <svg id="success" class="svg" viewBox="0 0 24 24">
+                <g>
+                    <circle cx="12" cy="12" r="12" stroke="none" fill="rgba(13, 179, 55, 0.85)" />
+                    <path fill="white" d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/>
+                </g>
+            </svg>
+            <svg id="error" class="svg" viewBox="0 0 24 24">
+                <g>
+                    <circle cx="12" cy="12" r="12" stroke="none" fill="rgba(179, 13, 13, 0.85)" />
+                    <path fill="white" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                </g>
+            </svg>
+
+            <video id="video" autoplay></video>
+            <div id="overlay" class="hidden"></div>
+            <canvas id="canvas"></canvas>
+
+            <div id="fileUpload" class="hidden" on-click="_clickedUpload">
+                <span>Choose Photo</span>
+                <input class="upload" type="file" on-change="_inputChanged" accept="image/*;capture=camera" />
+            </div>
+        </div>
+    </template>
+
+</dom-module>
+
+<script>
+    Polymer({
+        is: 'katapult-qr',
+        properties: {
+            _inputSources: {
+                type: Array,
+                readOnly: true,
+                value: function() { return []; },
+            },
+            data: {
+                type: String,
+                notify: true,
+                value: null
+            }
+        },
+
+        ready: function() {
+
+            // Create a canvas element to pull frames from video
+            this._bufferCanvas = document.createElement('canvas');
+            this._createWorker();
+
+            if (this._supportsGetUserMedia()) {
+                this._detectSources(function() {
+
+                    if(this._inputSources.length > 0) {
+                        // this.startScanning();
+                    } else {
+                        this._showCanvas();
+                        this._toggleMessage(true);
+                    }
+
+                }.bind(this));
+            } else {
+                this._showCanvas();
+                this._toggleMessage(true);
+            }
+        },
+
+        _createWorker: function() {
+
+            this._worker = new Worker(this.resolveUrl('worker.js'));
+            this._worker.addEventListener('message', function(e) {
+
+                var result = JSON.parse(e.data);
+
+                if(result.message === 'Error') {
+                    if(result.type == 'image') {
+                        this._showIcon('error');
+                    }
+                } else {
+                    if(result.type == 'video') {
+                        this.stopScanning();
+                        this._killWorker();
+                    }
+                    this._showIcon('success');
+                    this._updateData(result.message);
+                }
+
+            }.bind(this), false);
+        },
+
+        _updateData: function(newData) {
+            this.data = newData;
+            this.fire('success');
+        },
+
+        _showIcon: function(icon) {
+            this.toggleClass('show', true, this.$[icon]);
+            setTimeout(function() {
+                this.toggleClass('show', false, this.$[icon]);
+            }.bind(this), 2000);
+        },
+
+        attached: function() {
+            this._setup();
+            this.toggleClass('hidden', false, this.$.overlay);
+            setTimeout(function() {
+                this.toggleClass('hidden', false, this.$.fileUpload);
+            }.bind(this), 5000);
+        },
+
+        _setup: function() {
+
+            var mainWidth = this.$.mainContainer.clientWidth;
+            var mainHeight = this.$.mainContainer.clientHeight;
+            var overlayWidth = this.$.overlay.clientWidth;
+            var overlayHeight = this.$.overlay.clientHeight;
+            var svgWidth = this.$.success.clientWidth;
+
+            this.$.message.style.left = (mainWidth - this.$.message.clientWidth) / 2 + 'px';
+            this.$.message.style.top = (mainHeight - this.$.message.clientHeight) / 2 + 'px';
+
+            this.$.success.style.left = this.$.error.style.left = (mainWidth - svgWidth) / 2 + 'px';
+            this.$.success.style.top = this.$.error.style.top = (mainHeight - svgWidth) / 2 + 'px';
+
+            this.$.success.style.height = svgWidth + 'px';
+            this.$.error.style.height = svgWidth + 'px';
+
+            var dimension = overlayWidth < overlayHeight? overlayWidth : overlayHeight;
+
+            this.$.overlay.style.top = (mainHeight - dimension - 20) / 2 + 'px';
+            this.$.overlay.style.height = dimension + 'px';
+        },
+
+        _showCanvas: function() {
+            this.toggleClass('hidden', false, this.$.canvas);
+            this.toggleClass('hidden', true, this.$.video);
+
+            setTimeout(function() {
+                this.toggleClass('hidden', false, this.$.fileUpload);
+            }.bind(this), 100);
+        },
+
+        _showFeed: function() {
+            this.toggleClass('hidden', false, this.$.video);
+            this.toggleClass('hidden', true, this.$.canvas);
+        },
+
+        _toggleMessage: function(state) {
+            this.toggleClass('hidden', !state, this.$.message);
+        },
+
+        _supportsGetUserMedia: function() {
+            return !!(navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia);
+        },
+
+        _detectSources: function(callback) {
+
+            if (typeof MediaStreamTrack === 'undefined' || typeof MediaStreamTrack.getSources === 'undefined') {
+                this._showCanvas();
+                this._toggleMessage(true);
+                callback();
+            } else {
+                MediaStreamTrack.getSources(function(sourceInfos) {
+
+                    console.log('sourceInfos:', sourceInfos);
+
+                    for (var i = 0; i < sourceInfos.length; i++) {
+                        var sourceInfo = sourceInfos[i];
+                        if (sourceInfo.kind === 'video' && sourceInfo.facing === 'environment') {
+                            this._inputSources.push(sourceInfo.id);
+                        }
+                    }
+                    callback();
+                }.bind(this));
+            }
+        },
+
+        _toggleInputSource: function(id) {
+            if(this._inputSources.length > 0) {
+                if(this._inputSources.indexOf(id) != -1) {
+                    this._setUpVideo(id);
+                } else {
+                    var source = this._inputSources.shift();
+                    this._inputSources.push(source);
+                    this._setUpVideo(source);
+                }
+            }
+        },
+
+        _killWorker: function() {
+            if(this._worker) {
+                this._worker.terminate();
+                this._worker = undefined;
+            }
+        },
+
+        stopScanning: function() {
+            console.log('stop scanning');
+            if(this._intervalFunction) {
+                clearInterval(this._intervalFunction);
+            }
+            var video = this.$$('#video');
+            video.pause();
+
+            var canvas = this.$$('#canvas');
+            var context = canvas.getContext("2d");
+            context.clearRect(0, 0, canvas.width, canvas.height);
+        },
+
+        startScanning: function() {
+            console.log('start scanning');
+            this._createWorker();
+            this._toggleInputSource();
+            this._showFeed();
+        },
+
+        _setUpVideo: function(videoSource) {
+
+            var video = this.$$('#video');
+            navigator.getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia;
+
+            var constraints = {
+              audio: false,
+              video: {
+                optional: [{
+                  sourceId: videoSource
+                }]
+              }
+            };
+
+            video.src = null;
+
+            // if (this._inputStream) {
+            //     video.src = null;
+            //     // this._inputStream.stop();
+            // }
+
+            navigator.getUserMedia(constraints, function(localMediaStream) {
+
+                // this._inputStream = window.URL.createObjectURL(localMediaStream);
+                video.src = window.URL.createObjectURL(localMediaStream);
+
+                // Note: onloadedmetadata doesn't fire in Chrome when using it with getUserMedia.
+                // See crbug.com/110938.
+                video.onloadedmetadata = function(e) {
+                    // Ready to go. Do some stuff.
+                    this._intervalFunction = setInterval(function() {
+                        this._decode([video], 'video');
+                    }.bind(this), 400);
+
+                }.bind(this);
+
+            }.bind(this), function(e) {
+                alert("Error: ", e);
+                this._toggleMessage(true);
+                this._showCanvas();
+            }.bind(this));
+        },
+
+        _decode: function(sourceArray, type) {
+            var data = [];
+            for (var i = 0; i < sourceArray.length; i++) {
+                var source = sourceArray[i];
+                var width = this._bufferCanvas.width = source.videoWidth || source.width;
+                var height = this._bufferCanvas.height = source.videoHeight || source.height;
+                var ctx = this._bufferCanvas.getContext('2d');
+                ctx.drawImage(source, 0, 0, width, height);
+                data.push([ctx.getImageData(0, 0, width, height).data, width, height]);
+            }
+            data.unshift(type);
+            this._worker.postMessage(data);
+        },
+
+        _updateCanvasSize: function() {
+            var c = this.$$('#canvas');
+            c.width = c.clientWidth;
+            c.height = c.clientHeight;
+        },
+
+        _drawImage: function(canvas, image, orientation) {
+
+            image = this._scaleImage(image, canvas.width, canvas.height);
+            var context = canvas.getContext("2d");
+
+            var degrees = 0;
+            if(orientation) {
+                degrees = orientation == 1? 0 : orientation == 8? -90 : orientation == 3? -180 : 90;
+            }
+
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            context.save();
+            // move to the center of the canvas
+            context.translate(canvas.width / 2, canvas.height / 2);
+            // rotate the canvas to the specified degrees
+            context.rotate(degrees * Math.PI / 180);
+            // draw the image - since the context is rotated, the image will be rotated also
+            context.translate(-canvas.width / 2, -canvas.height / 2);
+            context.drawImage(image, (canvas.width - image.width) / 2, (canvas.height - image.height) / 2, image.width, image.height);
+            context.restore();
+        },
+
+        _setCanvas: function(src, orientation) {
+            this._updateCanvasSize();
+            var canvas = this.$$('#canvas');
+            var image = new Image;
+            image.onload = function() {
+                console.log('image loaded');
+                this._drawImage(canvas, image, orientation);
+            }.bind(this);
+            image.src = src;
+        },
+
+        _getOrientation: function(file, callback) {
+            var reader = new FileReader();
+            reader.onload = function(e) {
+                var view = new DataView(e.target.result);
+                if (view.getUint16(0, false) != 0xFFD8) return callback(-2);
+                var length = view.byteLength, offset = 2;
+                while (offset < length) {
+                    var marker = view.getUint16(offset, false);
+                    offset += 2;
+                    if (marker == 0xFFE1) {
+                        if (view.getUint32(offset += 2, false) != 0x45786966) return callback(-1);
+                        var little = view.getUint16(offset += 6, false) == 0x4949;
+                        offset += view.getUint32(offset + 4, little);
+                        var tags = view.getUint16(offset, little);
+                        offset += 2;
+                        for (var i = 0; i < tags; i++)
+                        if (view.getUint16(offset + (i * 12), little) == 0x0112)
+                        return callback(view.getUint16(offset + (i * 12) + 8, little));
+                    }
+                    else if ((marker & 0xFF00) != 0xFF00) break;
+                    else offset += view.getUint16(offset, false);
+                }
+                return callback(-1);
+            };
+            reader.readAsArrayBuffer(file.slice(0, 64 * 1024));
+        },
+
+        _scaleImage: function(image, newWidth, newHeight) {
+            if(newWidth > newHeight) {
+                var ratio = newWidth / image.width;
+                image.width = newWidth;
+                image.height = image.height * ratio;
+            } else {
+                var ratio = newHeight / image.height;
+                image.height = newHeight;
+                image.width = image.width * ratio;
+            }
+            return image;
+        },
+
+        _decodeStaticImage: function(source) {
+            var image = new Image;
+            image.onload = function() {
+
+                var images = [];
+                images.push(image);
+                images.push(this._scaleImage(image.cloneNode(true), image.width / 2, image.height / 2));
+                images.push(this._scaleImage(image.cloneNode(true), image.width / 4, image.height / 4));
+                images.push(this._scaleImage(image.cloneNode(true), image.width / 8, image.height / 8));
+
+                // Try to decode the image at different resolutions
+                this._decode(images, 'image');
+
+            }.bind(this);
+            image.src = source;
+        },
+
+        _clickedUpload: function() {
+            this.stopScanning();
+            this._showCanvas();
+        },
+
+        _inputChanged: function(e) {
+            this._toggleMessage(false);
+            var imageFile = e.target.files[0];
+            this._getOrientation(imageFile, function(orientation) {
+                var reader = new FileReader();
+                reader.onloadend = function (data) {
+                    this._setCanvas(reader.result, orientation);
+                    this._decodeStaticImage(reader.result);
+                }.bind(this);
+                if (imageFile) {
+                    reader.readAsDataURL(imageFile);
+                }
+            }.bind(this));
+        },
+    });
+</script>

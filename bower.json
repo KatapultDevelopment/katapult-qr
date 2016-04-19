@@ -1,0 +1,28 @@
+{
+  "name": "katapult-qr",
+  "version": "1.0.0",
+  "authors": [
+    "Avery deGruchy <averydegruchy@gmail.com>"
+  ],
+  "description": "A Polymer element that scans and decodes QR Codes",
+  "main": "katapult-qr.html",
+  "moduleType": [],
+  "keywords": [
+    "polymer",
+    "qr code",
+    "scanner",
+    "reader"
+  ],
+  "license": "MIT",
+  "private": true,
+  "ignore": [
+    "**/.*",
+    "node_modules",
+    "bower_components",
+    "test",
+    "tests"
+  ],
+  "dependencies": {
+    "polymer": "Polymer/polymer#1.2.3"
+  }
+}
